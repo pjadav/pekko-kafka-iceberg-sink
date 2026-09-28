@@ -4,7 +4,13 @@ import java.util.Locale
 import scala.concurrent.duration._
 
 final case class Config(
-  baseConfig: BaseConfig,
+  environment: String               = "local",
+  bootstrapServers: String          = "localhost:9092",
+  applicationId: String             = "pekko-iceberg-sink",
+  reconnectBackoffInMillis: Long    = 50,
+  reconnectMaxBackoffInMillis: Long = 1000,
+  consumerMaxPollRecords: Int       = 500,
+  enableAutoCommit: Boolean         = false,
   inputTopics: Seq[String],
   autoOffsetReset: String,
   s3Bucket: String,
@@ -13,23 +19,26 @@ final case class Config(
   icebergDatabase: String                      = "default",
   icebergTable: String                         = "events",
   icebergTableNameMode: String                 = "static",
-  icebergSchemaMode: String                = "generic",
-  icebergPartitionFields: Seq[String]      = Seq("event_date", "ingest_date"),
+  icebergPartitionFields: Seq[String]          = Seq("event_date", "ingest_date"),
   icebergWarehouse: Option[String]             = None,
   icebergGlueCatalogId: Option[String]         = None,
+  icebergGlueEndpoint: Option[String]          = None,
+  icebergS3Endpoint: Option[String]            = None,
+  icebergS3PathStyleAccess: Boolean            = false,
   icebergCatalogClientFactory: Option[String]  = None,
   icebergAssumeRoleArn: Option[String]         = None,
   icebergAssumeRoleRegion: Option[String]      = None,
   icebergAssumeRoleSessionName: Option[String] = None,
   schemaRegistryUrl: String,
+  valueSubjectNameStrategy: String = "io.confluent.kafka.serializers.subject.RecordNameStrategy",
   cacheCapacity: Int,
-  s3BatchSize: Int                  = 5000,                 // flush when record limit is reached
-  s3BatchMaxBytes: Long             = 128L * 1024L * 1024L, // flush when raw byte limit is reached
-  s3BatchWindowSeconds: Int         = 60,                   // flush when time limit is reached
-  icebergCommitIntervalSeconds: Int = 300,                  // commit accumulated files at this interval
-  kafkaCommitMaxBatch: Int          = 500,
+  s3BatchSize: Int                   = 5000,                 // flush when record limit is reached
+  s3BatchMaxBytes: Long              = 128L * 1024L * 1024L, // flush when raw byte limit is reached
+  s3BatchWindowSeconds: Int          = 60,                   // flush when time limit is reached
+  icebergCommitIntervalSeconds: Int  = 300,                  // commit accumulated files at this interval
+  kafkaCommitMaxBatch: Int           = 500,
   kafkaCommitMaxIntervalSeconds: Int = 5,
-  topicExcludeRegex: String         = "(?:_.*|internal-.*|.*Dlq$|.*\\.internal$|.*DLQ$)"
+  topicExcludeRegex: String          = "(?:_.*|internal-.*|.*Dlq$|.*\\.internal$|.*DLQ$)"
 ) {
   private def normalizedTableNameMode: String                   = icebergTableNameMode.toLowerCase(Locale.ROOT)
   private def normalizeCatalogIdentifier(value: String): String =
@@ -46,7 +55,6 @@ final case class Config(
   def topicSubscriptionPattern: String = s"^(?!(?:$topicExcludeRegex)).+$$"
 
   def normalizedIcebergDatabase: String = normalizeCatalogIdentifier(icebergDatabase)
-  def normalizedIcebergSchemaMode: String = icebergSchemaMode.toLowerCase(Locale.ROOT)
 
   def tableNameForTopic(topic: String): String =
     normalizedTableNameMode match {
@@ -66,14 +74,12 @@ final case class Config(
       Set("static", "topic").contains(normalizedTableNameMode),
       "ICEBERG_TABLE_NAME_MODE must be either 'static' or 'topic'"
     )
-    require(Set("generic", "envelope").contains(normalizedIcebergSchemaMode), "ICEBERG_SCHEMA_MODE must be 'generic' or 'envelope'")
     require(icebergPartitionFields.nonEmpty, "ICEBERG_PARTITION_FIELDS must contain at least one field")
-    require(icebergPartitionFields.distinct.size == icebergPartitionFields.size, "ICEBERG_PARTITION_FIELDS must not contain duplicates")
-    val allowedPartitionFields =
-      if (normalizedIcebergSchemaMode == "generic")
-        Set("event_date", "ingest_date", "source_topic", "table_name")
-      else
-        Set("year_month_day", "ingest_year_month_day", "pipeline_source", "full_table_name")
+    require(
+      icebergPartitionFields.distinct.size == icebergPartitionFields.size,
+      "ICEBERG_PARTITION_FIELDS must not contain duplicates"
+    )
+    val allowedPartitionFields = Set("event_date", "ingest_date", "source_topic", "table_name")
     require(
       icebergPartitionFields.forall(allowedPartitionFields.contains),
       s"ICEBERG_PARTITION_FIELDS must use fields from ${allowedPartitionFields.toSeq.sorted.mkString(", ")}"
@@ -101,13 +107,18 @@ object Config {
       .map(_.trim)
       .filter(_.nonEmpty)
 
+  private def getBooleanEnvVar(name: String, default: Boolean): Boolean =
+    getOptionalEnvVar(name).map(_.toBoolean).getOrElse(default)
+
   def apply(): Config = {
-    val schemaMode = getOptionalEnvVar("ICEBERG_SCHEMA_MODE").getOrElse("generic")
-    val defaultPartitionFields =
-      if (schemaMode.equalsIgnoreCase("envelope")) Seq("year_month_day", "ingest_year_month_day")
-      else Seq("event_date", "ingest_date")
     val config = new Config(
-      baseConfig      = BaseConfig.applyFromEnv(),
+      environment                 = getOptionalEnvVar("ENVIRONMENT").getOrElse("local"),
+      bootstrapServers            = getOptionalEnvVar("KAFKA_BOOTSTRAP_SERVERS").getOrElse("localhost:9092"),
+      applicationId               = getOptionalEnvVar("KAFKA_CONSUMER_GROUP").getOrElse("pekko-iceberg-sink"),
+      reconnectBackoffInMillis    = getOptionalEnvVar("KAFKA_RECONNECT_BACKOFF_MS").map(_.toLong).getOrElse(50L),
+      reconnectMaxBackoffInMillis = getOptionalEnvVar("KAFKA_RECONNECT_MAX_BACKOFF_MS").map(_.toLong).getOrElse(1000L),
+      consumerMaxPollRecords      = getOptionalEnvVar("KAFKA_MAX_POLL_RECORDS").map(_.toInt).getOrElse(500),
+      enableAutoCommit            = getBooleanEnvVar("KAFKA_ENABLE_AUTO_COMMIT", false),
       inputTopics     = getOptionalEnvVar("INPUT_TOPICS").toSeq.flatMap(_.split(",").map(_.trim).filter(_.nonEmpty)),
       autoOffsetReset = getOptionalEnvVar("AUTO_OFFSET_RESET").getOrElse("latest"),
       s3Bucket        = getOptionalEnvVar("S3_BUCKET").getOrElse("example-iceberg-bucket"),
@@ -115,27 +126,31 @@ object Config {
       s3PathPrefix    = getOptionalEnvVar("S3_PATH_PREFIX").getOrElse("data"),
       icebergDatabase = getOptionalEnvVar("ICEBERG_DATABASE").getOrElse("default"),
       icebergTable    = getOptionalEnvVar("ICEBERG_TABLE").getOrElse("events"),
-      icebergTableNameMode         = getOptionalEnvVar("ICEBERG_TABLE_NAME_MODE").getOrElse("static"),
-      icebergSchemaMode            = schemaMode,
-      icebergPartitionFields      = getOptionalEnvVar("ICEBERG_PARTITION_FIELDS")
+      icebergTableNameMode   = getOptionalEnvVar("ICEBERG_TABLE_NAME_MODE").getOrElse("static"),
+      icebergPartitionFields = getOptionalEnvVar("ICEBERG_PARTITION_FIELDS")
         .map(_.split(",").map(_.trim).filter(_.nonEmpty).toSeq)
-        .getOrElse(defaultPartitionFields),
+        .getOrElse(Seq("event_date", "ingest_date")),
       icebergWarehouse             = getOptionalEnvVar("ICEBERG_WAREHOUSE"),
       icebergGlueCatalogId         = getOptionalEnvVar("ICEBERG_GLUE_ID"),
+      icebergGlueEndpoint          = getOptionalEnvVar("ICEBERG_GLUE_ENDPOINT"),
+      icebergS3Endpoint            = getOptionalEnvVar("ICEBERG_S3_ENDPOINT"),
+      icebergS3PathStyleAccess     = getBooleanEnvVar("ICEBERG_S3_PATH_STYLE_ACCESS", false),
       icebergCatalogClientFactory  = getOptionalEnvVar("ICEBERG_CATALOG_CLIENT_FACTORY"),
       icebergAssumeRoleArn         = getOptionalEnvVar("ICEBERG_ASSUME_ROLE_ARN"),
       icebergAssumeRoleRegion      = getOptionalEnvVar("ICEBERG_ASSUME_ROLE_REGION"),
       icebergAssumeRoleSessionName = getOptionalEnvVar("ICEBERG_ASSUME_ROLE_SESSION_NAME"),
-      s3BatchSize                  = getOptionalEnvVar("S3_BATCH_SIZE").map(_.toInt).getOrElse(5000),
+      schemaRegistryUrl            = getOptionalEnvVar("SCHEMA_REGISTRY_URL").getOrElse("http://localhost:8081"),
+      valueSubjectNameStrategy     = getOptionalEnvVar("SCHEMA_REGISTRY_VALUE_SUBJECT_NAME_STRATEGY")
+        .getOrElse("io.confluent.kafka.serializers.subject.RecordNameStrategy"),
+      cacheCapacity        = getOptionalEnvVar("CACHE_CAPACITY").map(_.toInt).getOrElse(2000),
+      s3BatchSize          = getOptionalEnvVar("S3_BATCH_SIZE").map(_.toInt).getOrElse(5000),
       s3BatchMaxBytes      = getOptionalEnvVar("S3_BATCH_MAX_BYTES").map(_.toLong).getOrElse(128L * 1024L * 1024L),
       s3BatchWindowSeconds = getOptionalEnvVar("S3_BATCH_WINDOW_SECONDS").map(_.toInt).getOrElse(60),
-      icebergCommitIntervalSeconds = getOptionalEnvVar("ICEBERG_COMMIT_INTERVAL_SECONDS").map(_.toInt).getOrElse(300),
-      kafkaCommitMaxBatch          = getOptionalEnvVar("KAFKA_COMMIT_MAX_BATCH").map(_.toInt).getOrElse(500),
+      icebergCommitIntervalSeconds  = getOptionalEnvVar("ICEBERG_COMMIT_INTERVAL_SECONDS").map(_.toInt).getOrElse(300),
+      kafkaCommitMaxBatch           = getOptionalEnvVar("KAFKA_COMMIT_MAX_BATCH").map(_.toInt).getOrElse(500),
       kafkaCommitMaxIntervalSeconds =
         getOptionalEnvVar("KAFKA_COMMIT_MAX_INTERVAL_SECONDS").map(_.toInt).getOrElse(5),
-      schemaRegistryUrl            = getOptionalEnvVar("SCHEMA_REGISTRY_URL").getOrElse("http://localhost:8081"),
-      cacheCapacity                = getOptionalEnvVar("CACHE_CAPACITY").map(_.toInt).getOrElse(2000),
-      topicExcludeRegex            = getOptionalEnvVar("INPUT_TOPIC_EXCLUDE_REGEX")
+      topicExcludeRegex = getOptionalEnvVar("INPUT_TOPIC_EXCLUDE_REGEX")
         .getOrElse("(?:_.*|internal-.*|.*Dlq$|.*\\.internal$|.*DLQ$)")
     )
 

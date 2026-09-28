@@ -2,7 +2,6 @@ package io.github.prakashjadav.icebergsink.components
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.typesafe.scalalogging.StrictLogging
-import org.apache.kafka.common.header.Headers
 import org.apache.pekko.NotUsed
 import org.apache.pekko.kafka.ConsumerMessage.{CommittableMessage, CommittableOffsetBatch}
 import org.apache.pekko.stream.scaladsl.Flow
@@ -17,6 +16,7 @@ final case class IcebergRecord(
   partition: Int,
   offset: Long,
   kafkaTimestamp: Long,
+  ingestionTimestamp: Long,
   yearMonthDay: String,
   ingestYearMonthDay: String
 )
@@ -34,28 +34,29 @@ class JsonConverter(batchSize: Int, batchMaxBytes: Long, batchWindow: FiniteDura
     PreparedIcebergBatch,
     NotUsed
   ] = Flow[CommittableMessage[String, JsonNode]]
-    .groupedWeightedWithin(batchMaxBytes, batchSize, batchWindow) { message =>
+    .map(message => message -> System.currentTimeMillis())
+    .groupedWeightedWithin(batchMaxBytes, batchSize, batchWindow) { case (message, _) =>
       message.record.value().toString.getBytes(StandardCharsets.UTF_8).length.toLong + 1L
     }
     .map { messages =>
-      val records = messages.map { message =>
-        val record             = message.record
-        val eventTimestampMs   = record.timestamp()
-        val ingestYearMonthDay = yearMonthDay(System.currentTimeMillis())
+      val records = messages.map { case (message, ingestionTimestampMs) =>
+        val record           = message.record
+        val eventTimestampMs = record.timestamp()
         IcebergRecord(
           payload            = record.value().toString,
           topic              = record.topic(),
           partition          = record.partition(),
           offset             = record.offset(),
           kafkaTimestamp     = eventTimestampMs,
+          ingestionTimestamp = ingestionTimestampMs,
           yearMonthDay       = yearMonthDay(eventTimestampMs),
-          ingestYearMonthDay = ingestYearMonthDay
+          ingestYearMonthDay = yearMonthDay(ingestionTimestampMs)
         )
       }
 
       PreparedIcebergBatch(
         records     = records,
-        offsets     = CommittableOffsetBatch(messages.map(_.committableOffset)),
+        offsets     = CommittableOffsetBatch(messages.map(_._1.committableOffset)),
         recordCount = messages.size
       )
     }

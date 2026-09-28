@@ -1,0 +1,110 @@
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.7.0
+    hostname: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.7.0
+    hostname: schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8081/subjects >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  moto:
+    image: motoserver/moto:5.0.28
+    hostname: moto
+    ports:
+      - "5000:5000"
+    environment:
+      MOTO_PORT: 5000
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/moto-api/')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  moto-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      moto:
+        condition: service_healthy
+    entrypoint: ["sh", "-c", "curl -sf -X PUT http://moto:5000/iceberg-warehouse && echo bucket-created"]
+    restart: "no"
+
+  connector:
+    build:
+      context: .
+      dockerfile: build/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+      moto-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    environment:
+      ENVIRONMENT: local
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_CONSUMER_GROUP: pekko-iceberg-local
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      INPUT_TOPICS: events
+      AUTO_OFFSET_RESET: earliest
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      S3_BUCKET: iceberg-warehouse
+      S3_REGION: us-east-1
+      S3_PATH_PREFIX: warehouse
+      ICEBERG_DATABASE: default
+      ICEBERG_TABLE: events
+      ICEBERG_TABLE_NAME_MODE: static
+      ICEBERG_PARTITION_FIELDS: event_date,ingest_date
+      ICEBERG_WAREHOUSE: s3://iceberg-warehouse/warehouse
+      ICEBERG_GLUE_ENDPOINT: http://moto:5000
+      ICEBERG_S3_ENDPOINT: http://moto:5000
+      ICEBERG_S3_PATH_STYLE_ACCESS: "true"
+      S3_BATCH_SIZE: 10
+      S3_BATCH_MAX_BYTES: 1048576
+      S3_BATCH_WINDOW_SECONDS: 2
+      ICEBERG_COMMIT_INTERVAL_SECONDS: 5
+      KAFKA_COMMIT_MAX_BATCH: 10
+      KAFKA_COMMIT_MAX_INTERVAL_SECONDS: 1
+      CACHE_CAPACITY: 100
+    restart: on-failure
+

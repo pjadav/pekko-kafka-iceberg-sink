@@ -12,8 +12,9 @@ Apache Iceberg tables in Amazon S3 through AWS Glue Catalog.
 - Static table routing or one Iceberg table per Kafka topic
 - Automatic Glue namespace/table creation
 - Configurable identity partition fields
+- Original JSON document stored as text in a `payload` string column without event-specific mapping
+- Native Iceberg `event_time` from Kafka and `ingestion_time` from the connector
 - Kafka metadata and provenance fields
-- Generic payload schema by default; legacy envelope schema is optional
 - Health state through Pekko Management
 - Local-friendly defaults; AWS MSK IAM can be enabled through environment variables
 
@@ -32,6 +33,30 @@ The example configuration is intentionally non-secret and points to local
 Kafka/Schema Registry. Replace storage and security settings before using it
 with AWS.
 
+## Docker Compose smoke test
+
+The local stack uses Kafka (KRaft), Confluent Schema Registry,
+[Moto](https://github.com/getmoto/moto) as a free AWS Glue/S3 emulator, and the
+connector. The connector uses the same `GlueCatalog` + `S3FileIO` code path as
+in AWS, pointed at Moto via `ICEBERG_GLUE_ENDPOINT` / `ICEBERG_S3_ENDPOINT`.
+
+The smoke test creates a topic, publishes a JSON Schema message, and checks
+that the connector creates an Iceberg Glue table and a Parquet data file.
+
+Requirements: Docker with Compose and sbt.
+
+```bash
+./scripts/smoke-test.sh                 # build jar + run
+SKIP_BUILD=true ./scripts/smoke-test.sh # reuse existing jar
+```
+
+Inspect or stop the stack:
+
+```bash
+docker compose logs -f connector
+docker compose down -v
+```
+
 ## Configuration
 
 See `.env.example` for all supported variables. Important settings:
@@ -43,7 +68,6 @@ See `.env.example` for all supported variables. Important settings:
 | `S3_BUCKET` | `example-iceberg-bucket` | S3 bucket |
 | `S3_REGION` | `us-east-1` | AWS region |
 | `ICEBERG_TABLE_NAME_MODE` | `static` or `topic` | Destination routing |
-| `ICEBERG_SCHEMA_MODE` | `generic` or `envelope` | Generic open-source schema or legacy envelope |
 | `ICEBERG_PARTITION_FIELDS` | `event_date,ingest_date` | Comma-separated identity partition fields |
 | `ICEBERG_WAREHOUSE` | `s3://bucket/warehouse` | Optional warehouse override |
 | `KAFKA_SECURITY_PROTOCOL` | `PLAINTEXT` | Use `SASL_SSL` for secured clusters |

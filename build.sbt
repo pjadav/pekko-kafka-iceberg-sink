@@ -25,15 +25,16 @@ lazy val root = (project in file("."))
       "com.github.luben" % "zstd-jni" % VersionScheme.Always,
       "com.google.protobuf" % "protobuf-java" % VersionScheme.Always
     ),
-    evictionErrorLevel := Level.Warn
+    evictionErrorLevel := Level.Warn,
+    assembly / mainClass := Some("io.github.prakashjadav.icebergsink.Main"),
+    assembly / assemblyMergeStrategy := {
+      case "module-info.class"                      => MergeStrategy.discard
+      case x if x.endsWith("module-info.class")     => MergeStrategy.discard
+      case "reference.conf"                         => MergeStrategy.concat
+      case "version.conf"                           => MergeStrategy.concat
+      case PathList("META-INF", "services", _ @_*)  => MergeStrategy.filterDistinctLines
+      case PathList("META-INF", _ @_*)              => MergeStrategy.discard
+      case _                                        => MergeStrategy.first
+    }
   )
   .enablePlugins(BuildInfoPlugin, JavaAppPackaging)
-
-lazy val assemblySettings = assembly / assemblyMergeStrategy := {
-  case "module-info.class" => MergeStrategy.discard
-  case "reference.conf"    => MergeStrategy.concat
-  case "version.conf"      => MergeStrategy.concat
-  case PathList("META-INF", "services", _ @ _*) => MergeStrategy.filterDistinctLines
-  case PathList("META-INF", _ @ _*)             => MergeStrategy.discard
-  case _                                        => MergeStrategy.first
-}

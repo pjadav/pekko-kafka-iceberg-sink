@@ -1,6 +1,5 @@
 package io.github.prakashjadav.icebergsink.components
 
-import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import io.github.prakashjadav.icebergsink.model.Config
 import com.typesafe.scalalogging.StrictLogging
 import org.apache.iceberg.catalog.{Catalog, Namespace, TableIdentifier}
@@ -18,7 +17,6 @@ import org.apache.pekko.stream.scaladsl.Flow
 import java.time.{Instant, ZoneOffset}
 import java.util.UUID
 import scala.collection.concurrent.TrieMap
-import scala.collection.JavaConverters._
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -72,77 +70,7 @@ class IcebergFlow(config: Config)(implicit materializer: Materializer, ec: Execu
 
               try
                 partitionRecords.foreach { value =>
-                  val payloadNode = IcebergCatalog.objectMapper.readTree(value.payload)
-                  val record      = GenericRecord.create(schema)
-                  if (config.normalizedIcebergSchemaMode == "envelope") {
-                    val headerNode = Option(payloadNode.get("header")).getOrElse(IcebergCatalog.objectMapper.createObjectNode())
-                    val eventNode = Option(payloadNode.get("event")).getOrElse(IcebergCatalog.objectMapper.createObjectNode())
-                    record.setField("header", IcebergCatalog.toRecord(IcebergCatalog.headerType, headerNode))
-                    record.setField("event", IcebergCatalog.toRecord(IcebergCatalog.eventType, eventNode))
-                    record.setField("year_month_day", value.yearMonthDay)
-                    record.setField("ingest_year_month_day", value.ingestYearMonthDay)
-                    record.setField("pipeline_source", value.topic)
-                    record.setField("full_table_name", tableName)
-                  } else {
-                    record.setField("payload", value.payload)
-                    record.setField("event_date", value.yearMonthDay)
-                    record.setField("ingest_date", value.ingestYearMonthDay)
-                    record.setField("source_topic", value.topic)
-                    record.setField("table_name", tableName)
-                  }
-                  val metadataNode = IcebergCatalog.objectMapper.createObjectNode()
-                  if (config.normalizedIcebergSchemaMode == "envelope") {
-                    record.setField(
-                      "_kafka_metadata",
-                      IcebergCatalog.toRecord(
-                        IcebergCatalog.kafkaMetadataType,
-                        metadataNode
-                          .put("kafka_topic", value.topic)
-                          .put("kafka_partition", value.partition)
-                          .put("kafka_offset", value.offset)
-                          .put("kafka_timestamp", value.kafkaTimestamp)
-                          .put("kafka_datetime", IcebergCatalog.isoDateTime(value.kafkaTimestamp))
-                          .put("smt_datetime", IcebergCatalog.isoDateTime(System.currentTimeMillis()))
-                      )
-                    )
-                    record.setField(
-                      "provenance",
-                      IcebergCatalog.toRecord(
-                        IcebergCatalog.provenanceType,
-                        IcebergCatalog.objectMapper.createObjectNode()
-                          .put("unique_id", s"${value.topic}-${value.partition}-${value.offset}")
-                          .put("producer", value.topic)
-                          .put("schema_name", "iceberg-worker")
-                          .put("schema_version", "unknown")
-                          .put("api_version", "v1")
-                          .put("source", value.topic)
-                      )
-                    )
-                  } else {
-                    record.setField(
-                      "kafka_metadata",
-                      IcebergCatalog.toRecord(
-                        IcebergCatalog.genericKafkaMetadataType,
-                        metadataNode
-                          .put("topic", value.topic)
-                          .put("partition", value.partition)
-                          .put("offset", value.offset)
-                          .put("timestamp", value.kafkaTimestamp)
-                          .put("datetime", IcebergCatalog.isoDateTime(value.kafkaTimestamp))
-                          .put("ingested_at", IcebergCatalog.isoDateTime(System.currentTimeMillis()))
-                      )
-                    )
-                    record.setField(
-                      "provenance",
-                      IcebergCatalog.toRecord(
-                        IcebergCatalog.genericProvenanceType,
-                        IcebergCatalog.objectMapper.createObjectNode()
-                          .put("record_id", s"${value.topic}-${value.partition}-${value.offset}")
-                          .put("source", value.topic)
-                      )
-                    )
-                  }
-                  writer.write(record)
+                  writer.write(IcebergCatalog.toRecord(value, tableName))
                 }
               finally writer.close()
 
@@ -176,91 +104,21 @@ class IcebergFlow(config: Config)(implicit materializer: Materializer, ec: Execu
 
   private def partitionValue(field: String, record: IcebergRecord, tableName: String): String =
     field match {
-      case "event_date" | "year_month_day" => record.yearMonthDay
-      case "ingest_date" | "ingest_year_month_day" => record.ingestYearMonthDay
-      case "source_topic" | "pipeline_source" => record.topic
-      case "table_name" | "full_table_name" => tableName
-      case other => throw new IllegalArgumentException(s"Unsupported partition field: $other")
+      case "event_date"   => record.yearMonthDay
+      case "ingest_date"  => record.ingestYearMonthDay
+      case "source_topic" => record.topic
+      case "table_name"   => tableName
+      case other          => throw new IllegalArgumentException(s"Unsupported partition field: $other")
     }
 }
 
 object IcebergFlow {
   def apply(config: Config)(implicit materializer: Materializer, ec: ExecutionContext): IcebergFlow =
-  new IcebergFlow(config)
+    new IcebergFlow(config)
 }
 
 private[icebergsink] object IcebergCatalog {
-  val objectMapper = new ObjectMapper()
-
-  val nameValueType: Types.StructType = Types.StructType.of(
-    Types.NestedField.required(1001, "name", Types.StringType.get()),
-    Types.NestedField.required(1002, "value", Types.StringType.get())
-  )
-
-  val userContextType: Types.StructType = Types.StructType.of(
-    Types.NestedField.required(2001, "clientId", Types.StringType.get()),
-    Types.NestedField.required(2002, "customerId", Types.StringType.get()),
-    Types.NestedField.required(2003, "consent", Types.StringType.get()),
-    Types.NestedField.required(2004, "additionalContext", Types.StringType.get())
-  )
-
-  val additionalInfoItemType: Types.StructType = Types.StructType.of(
-    Types.NestedField.required(3001, "name", Types.StringType.get()),
-    Types.NestedField.required(3002, "value", Types.StringType.get())
-  )
-
-  val actionItemType: Types.StructType = Types.StructType.of(
-    Types.NestedField.required(3101, "name", Types.StringType.get()),
-    Types.NestedField.required(3102, "value", Types.StringType.get())
-  )
-
-  val eventType: Types.StructType = Types.StructType.of(
-    Types.NestedField.required(4001, "treatment", Types.StringType.get()),
-    Types.NestedField.required(4002, "logRequest", Types.BooleanType.get()),
-    Types.NestedField.optional(4003, "additionalInfo", Types.ListType.ofRequired(4004, additionalInfoItemType)),
-    Types.NestedField.optional(4005, "actions", Types.ListType.ofRequired(4006, actionItemType)),
-    Types.NestedField.required(4007, "userContext", userContextType),
-    Types.NestedField.required(4008, "routingKey", Types.StringType.get()),
-    Types.NestedField.required(4009, "policy", Types.StringType.get()),
-    Types.NestedField.required(4010, "trackingId", Types.StringType.get())
-  )
-
-  val headerType: Types.StructType = Types.StructType.of(
-    Types.NestedField.required(5001, "producerReference", Types.StringType.get()),
-    Types.NestedField.required(5002, "conversationId", Types.StringType.get()),
-    Types.NestedField.required(5003, "origin", Types.StringType.get()),
-    Types.NestedField.required(5004, "contextUri", Types.StringType.get()),
-    Types.NestedField.required(5005, "serviceName", Types.StringType.get()),
-    Types.NestedField.required(5006, "affiliateId", Types.StringType.get()),
-    Types.NestedField.required(5007, "serviceVersion", Types.StringType.get()),
-    Types.NestedField.required(5008, "managedGroupId", Types.StringType.get()),
-    Types.NestedField.required(5009, "environmentName", Types.StringType.get()),
-    Types.NestedField.required(5010, "appRegisterId", Types.LongType.get()),
-    Types.NestedField.required(5011, "entryPointId", Types.StringType.get()),
-    Types.NestedField.required(5012, "eventTime", Types.StringType.get()),
-    Types.NestedField.required(5013, "eventName", Types.StringType.get()),
-    Types.NestedField.required(5014, "managedGroupTenantId", Types.StringType.get())
-  )
-
   val kafkaMetadataType: Types.StructType = Types.StructType.of(
-    Types.NestedField.required(6001, "kafka_topic", Types.StringType.get()),
-    Types.NestedField.required(6002, "kafka_partition", Types.IntegerType.get()),
-    Types.NestedField.required(6003, "kafka_offset", Types.LongType.get()),
-    Types.NestedField.required(6004, "kafka_timestamp", Types.LongType.get()),
-    Types.NestedField.required(6005, "kafka_datetime", Types.StringType.get()),
-    Types.NestedField.required(6006, "smt_datetime", Types.StringType.get())
-  )
-
-  val provenanceType: Types.StructType = Types.StructType.of(
-    Types.NestedField.required(7001, "unique_id", Types.StringType.get()),
-    Types.NestedField.required(7002, "producer", Types.StringType.get()),
-    Types.NestedField.required(7003, "schema_name", Types.StringType.get()),
-    Types.NestedField.required(7004, "schema_version", Types.StringType.get()),
-    Types.NestedField.required(7005, "api_version", Types.StringType.get()),
-    Types.NestedField.required(7006, "source", Types.StringType.get())
-  )
-
-  val genericKafkaMetadataType: Types.StructType = Types.StructType.of(
     Types.NestedField.required(1001, "topic", Types.StringType.get()),
     Types.NestedField.required(1002, "partition", Types.IntegerType.get()),
     Types.NestedField.required(1003, "offset", Types.LongType.get()),
@@ -269,78 +127,60 @@ private[icebergsink] object IcebergCatalog {
     Types.NestedField.required(1006, "ingested_at", Types.StringType.get())
   )
 
-  val genericProvenanceType: Types.StructType = Types.StructType.of(
+  val provenanceType: Types.StructType = Types.StructType.of(
     Types.NestedField.required(1101, "record_id", Types.StringType.get()),
     Types.NestedField.required(1102, "source", Types.StringType.get())
   )
 
-  val schema = new Schema(
-    Types.NestedField.required(1, "header", headerType),
-    Types.NestedField.required(2, "event", eventType),
-    Types.NestedField.required(3, "year_month_day", Types.StringType.get()),
-    Types.NestedField.required(4, "ingest_year_month_day", Types.StringType.get()),
-    Types.NestedField.optional(5, "pipeline_source", Types.StringType.get()),
-    Types.NestedField.optional(6, "full_table_name", Types.StringType.get()),
-    Types.NestedField.required(7, "_kafka_metadata", kafkaMetadataType),
-    Types.NestedField.required(8, "provenance", provenanceType)
-  )
-
-  val partitionSpec: PartitionSpec = PartitionSpec.builderFor(schema)
-    .identity("year_month_day")
-    .identity("ingest_year_month_day")
-    .build()
-
-  val genericSchema: Schema = new Schema(
+  val schema: Schema = new Schema(
     Types.NestedField.required(1, "payload", Types.StringType.get()),
     Types.NestedField.required(2, "event_date", Types.StringType.get()),
     Types.NestedField.required(3, "ingest_date", Types.StringType.get()),
     Types.NestedField.optional(4, "source_topic", Types.StringType.get()),
     Types.NestedField.optional(5, "table_name", Types.StringType.get()),
-    Types.NestedField.required(6, "kafka_metadata", genericKafkaMetadataType),
-    Types.NestedField.required(7, "provenance", genericProvenanceType)
+    Types.NestedField.required(6, "kafka_metadata", kafkaMetadataType),
+    Types.NestedField.required(7, "provenance", provenanceType),
+    Types.NestedField.optional(8, "event_time", Types.TimestampType.withZone()),
+    Types.NestedField.optional(9, "ingestion_time", Types.TimestampType.withZone())
   )
 
-  def schema(config: Config): Schema =
-    if (config.normalizedIcebergSchemaMode == "envelope") schema else genericSchema
-
   def partitionSpec(config: Config): PartitionSpec = {
-    val targetSchema = schema(config)
-    val builder = PartitionSpec.builderFor(targetSchema)
+    val builder = PartitionSpec.builderFor(schema)
     config.icebergPartitionFields.foreach(builder.identity)
     builder.build()
   }
 
-  def nestedFieldValue(node: JsonNode, fieldName: String, fallback: String = ""): String =
-    Option(node.get(fieldName)).map(_.asText()).getOrElse(fallback)
-
-  def toRecord(structType: Types.StructType, node: JsonNode): GenericRecord = {
-    val record = GenericRecord.create(structType)
-    structType.fields().forEach { field =>
-      val fieldName = field.name()
-      val valueNode = Option(node.get(fieldName)).orElse(Option(node.get(fieldName.replace("_", ""))))
-      if (valueNode.isDefined) {
-        field.`type`() match {
-          case t: Types.StringType  => record.setField(fieldName, valueNode.get.asText())
-          case t: Types.LongType    => record.setField(fieldName, valueNode.get.asLong())
-          case t: Types.IntegerType => record.setField(fieldName, valueNode.get.asInt())
-          case t: Types.BooleanType => record.setField(fieldName, valueNode.get.asBoolean())
-          case t: Types.ListType    =>
-            val values = valueNode.get.elements().asScala.toSeq.map { child =>
-              if (child.isObject) toRecord(t.elementType.asInstanceOf[Types.StructType], child)
-              else child.asText()
-            }
-            record.setField(fieldName, values.asJava)
-          case t: Types.StructType =>
-            record.setField(fieldName, toRecord(t, valueNode.get))
-          case _ => record.setField(fieldName, valueNode.get.asText())
-        }
-      }
-    }
-    record
-  }
-
   def isoDateTime(epochMs: Long): String =
     Instant.ofEpochMilli(epochMs).atZone(ZoneOffset.UTC).toLocalDateTime.toString
+
+  def timestamp(epochMs: Long): java.time.OffsetDateTime =
+    Instant.ofEpochMilli(epochMs).atOffset(ZoneOffset.UTC)
+
+  def toRecord(value: IcebergRecord, tableName: String): GenericRecord = {
+    val record = GenericRecord.create(schema)
+    record.setField("payload", value.payload)
+    record.setField("event_time", timestamp(value.kafkaTimestamp))
+    record.setField("ingestion_time", timestamp(value.ingestionTimestamp))
+    record.setField("event_date", value.yearMonthDay)
+    record.setField("ingest_date", value.ingestYearMonthDay)
+    record.setField("source_topic", value.topic)
+    record.setField("table_name", tableName)
+
+    val metadata = GenericRecord.create(kafkaMetadataType)
+    metadata.setField("topic", value.topic)
+    metadata.setField("partition", value.partition)
+    metadata.setField("offset", value.offset)
+    metadata.setField("timestamp", value.kafkaTimestamp)
+    metadata.setField("datetime", isoDateTime(value.kafkaTimestamp))
+    metadata.setField("ingested_at", isoDateTime(value.ingestionTimestamp))
+    record.setField("kafka_metadata", metadata)
+
+    val provenance = GenericRecord.create(provenanceType)
+    provenance.setField("record_id", s"${value.topic}-${value.partition}-${value.offset}")
+    provenance.setField("source", value.topic)
+    record.setField("provenance", provenance)
+    record
+  }
 
   def apply(config: Config): Catalog = {
     val properties = catalogProperties(config)
@@ -356,7 +196,11 @@ private[icebergsink] object IcebergCatalog {
     val properties = new java.util.HashMap[String, String]()
     properties.put("warehouse", warehouse(config))
     properties.put("io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+    properties.put("client.region", config.s3Region)
     config.icebergGlueCatalogId.foreach(properties.put("glue.id", _))
+    config.icebergGlueEndpoint.foreach(properties.put("glue.endpoint", _))
+    config.icebergS3Endpoint.foreach(properties.put("s3.endpoint", _))
+    properties.put("s3.path-style-access", config.icebergS3PathStyleAccess.toString)
     config.icebergCatalogClientFactory.foreach(properties.put("client.factory", _))
     config.icebergAssumeRoleArn.foreach(properties.put("client.assume-role.arn", _))
     config.icebergAssumeRoleRegion.foreach(properties.put("client.assume-role.region", _))
@@ -372,13 +216,22 @@ private[icebergsink] object IcebergCatalog {
   }
 
   def loadOrCreate(catalog: Catalog, identifier: TableIdentifier, config: Config): Table =
-    try catalog.loadTable(identifier)
-    catch {
+    try {
+      val table                   = catalog.loadTable(identifier)
+      val missingTimestampColumns = Seq("event_time", "ingestion_time").filter(table.schema().findField(_) == null)
+      if (missingTimestampColumns.nonEmpty) {
+        val update = table.updateSchema()
+        missingTimestampColumns.foreach(update.addColumn(_, Types.TimestampType.withZone()))
+        update.commit()
+        table.refresh()
+      }
+      table
+    } catch {
       case _: org.apache.iceberg.exceptions.NoSuchTableException =>
         val namespaces = catalog.asInstanceOf[SupportsNamespaces]
         if (!namespaces.listNamespaces().contains(identifier.namespace())) {
           namespaces.createNamespace(identifier.namespace())
         }
-        catalog.createTable(identifier, schema(config), partitionSpec(config))
+        catalog.createTable(identifier, schema, partitionSpec(config))
     }
 }

@@ -1,7 +1,6 @@
 package io.github.prakashjadav.icebergsink.components
 
 import com.fasterxml.jackson.databind.JsonNode
-import io.github.prakashjadav.icebergsink.model.BaseConfig
 import io.github.prakashjadav.icebergsink.model.Config
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig
@@ -27,7 +26,7 @@ import scala.jdk.CollectionConverters._
 class ConsumerSource(
   inputTopics: Seq[String],
   topicSubscriptionPattern: String,
-  kafkaConfig: BaseConfig,
+  kafkaConfig: Config,
   autoOffsetReset: String,
   schemaRegistryClient: SchemaRegistryClient,
   schemaRegistryUrl: String
@@ -41,7 +40,7 @@ class ConsumerSource(
       ConsumerConfig.MAX_POLL_RECORDS_CONFIG         -> kafkaConfig.consumerMaxPollRecords.toString,
       ConsumerConfig.RECONNECT_BACKOFF_MS_CONFIG     -> kafkaConfig.reconnectBackoffInMillis.toString,
       ConsumerConfig.RECONNECT_BACKOFF_MAX_MS_CONFIG -> kafkaConfig.reconnectMaxBackoffInMillis.toString,
-      ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG       -> false.toString,
+      ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG       -> kafkaConfig.enableAutoCommit.toString,
       ConsumerConfig.AUTO_OFFSET_RESET_CONFIG        -> autoOffsetReset,
       CommonClientConfigs.SECURITY_PROTOCOL_CONFIG   -> sys.env.getOrElse("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")
     )
@@ -77,10 +76,10 @@ class ConsumerSource(
 
   private def buildSerde(client: SchemaRegistryClient, schemaRegUrl: String): KafkaJsonSchemaDeserializer[JsonNode] = {
     val serdeConf: util.Map[String, String] = Map(
-      AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG -> schemaRegUrl,
-      AbstractKafkaSchemaSerDeConfig.AUTO_REGISTER_SCHEMAS      -> false.toString,
-      AbstractKafkaSchemaSerDeConfig.VALUE_SUBJECT_NAME_STRATEGY -> "io.confluent.kafka.serializers.subject.RecordNameStrategy",
-      KafkaJsonSchemaSerializerConfig.FAIL_INVALID_SCHEMA -> "true"
+      AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG  -> schemaRegUrl,
+      AbstractKafkaSchemaSerDeConfig.AUTO_REGISTER_SCHEMAS       -> false.toString,
+      AbstractKafkaSchemaSerDeConfig.VALUE_SUBJECT_NAME_STRATEGY -> kafkaConfig.valueSubjectNameStrategy,
+      KafkaJsonSchemaSerializerConfig.FAIL_INVALID_SCHEMA        -> "true"
     ).asJava
 
     new KafkaJsonSchemaDeserializer(client, serdeConf)
@@ -94,7 +93,7 @@ object ConsumerSource {
     new ConsumerSource(
       config.inputTopics,
       config.topicSubscriptionPattern,
-      config.baseConfig,
+      config,
       config.autoOffsetReset,
       schemaRegistryClient,
       config.schemaRegistryUrl

@@ -21,7 +21,10 @@ object Dependencies {
     "org.apache.iceberg" % "iceberg-parquet" % "1.7.1",
     "org.apache.hadoop" % "hadoop-common" % "3.3.6",
     "software.amazon.awssdk" % "glue" % "2.25.62",
-    "software.amazon.awssdk" % "s3" % "2.25.62"
+    "software.amazon.awssdk" % "s3" % "2.25.62",
+    "software.amazon.awssdk" % "sts" % "2.25.62",
+    "software.amazon.awssdk" % "kms" % "2.25.62",
+    "software.amazon.msk" % "aws-msk-iam-auth" % "2.2.0"
   )
 
   lazy val observability = Seq(

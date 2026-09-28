@@ -11,8 +11,8 @@ class ConfigSpec extends TestFixtures {
       "^(?!(?:(?:_.*|internal-.*|.*Dlq$|.*\\.internal$|.*DLQ$))).+$"
   }
 
-  it should "use BaseConfig bootstrap servers for source" in {
-    appConfig.baseConfig.bootstrapServers shouldBe "dummy:9092"
+  it should "use bootstrap servers for source" in {
+    appConfig.bootstrapServers shouldBe "dummy:9092"
   }
 
   it should "use latest as auto offset reset" in {

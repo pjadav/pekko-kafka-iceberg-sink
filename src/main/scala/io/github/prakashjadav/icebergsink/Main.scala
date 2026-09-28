@@ -34,7 +34,7 @@ object Main extends App with StrictLogging {
   streamsFuture.onComplete {
     case Failure(ex) =>
       logger.error(s"Stream failed: ${ex.getMessage}", ex)
-
+      system.terminate().onComplete(_ => sys.exit(1))
     case Success(_) =>
       logger.info("Stream completed normally, shutting down")
       system.terminate().onComplete(_ => sys.exit(0))
