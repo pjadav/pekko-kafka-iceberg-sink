@@ -1,0 +1,10 @@
+target/
+/project/target
+/project/project/target
+.DS_Store
+.metals
+.bloop
+.idea
+.bsp
+.terraform
+.terraform.lock.hcl

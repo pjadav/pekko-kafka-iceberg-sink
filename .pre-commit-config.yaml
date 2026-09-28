@@ -1,0 +1,25 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v2.3.0
+    hooks:
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: local
+    hooks:
+      - id: scala-fmt
+        name: SBT Format
+        entry: sbt scalafmtAll
+        language: system
+        always_run: true
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: tofu-fmt
+        name: Tofu Format
+        entry: tofu fmt -recursive
+        language: system
+        always_run: true
+        pass_filenames: false
